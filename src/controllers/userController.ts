@@ -1,60 +1,117 @@
 import { Request, Response } from 'express';
-import { connection } from '../db';
-import { User, UserRow } from '../models/User';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { db } from '../db';
 
-export const createUser = (req: Request, res: Response): void => {
-  const { name, email, password } = req.body;
+export async function createUser(req: Request, res: Response) {
+  try {
+    const { name, email, password } = req.body;
 
-  const user: User = { name, email, password };
-
-  connection.query('INSERT INTO users SET ?', user, (err, result) => {
-    if (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Internal server error' });
-      return;
+    // Verifica se o email já está cadastrado
+    const [existingUser] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+    if (existingUser) {
+      return res.status(400).json({ error: 'O email informado já está sendo usado.' });
     }
 
-    const newUser: User = { id: result.insertId, ...user };
+    // Criptografa a senha
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    res.status(201).json(newUser);
-  });
-};
+    // Insere o usuário no banco de dados
+    const result = await db.query('INSERT INTO users (name, email, password) VALUES (?, ?, ?)', [
+      name,
+      email,
+      hashedPassword,
+    ]);
 
-export const getAllUsers = (req: Request, res: Response): void => {
-  connection.query('SELECT * FROM users', (err, results) => {
-    if (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Internal server error' });
-      return;
-    }
+    res.json({ id: result.insertId, name, email });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+}
 
-    const users: User[] = results.map((row: UserRow) => {
-      const { id, name, email, password } = row;
-      return { id, name, email, password };
-    });
-
+export async function getAllUsers(req: Request, res: Response) {
+  try {
+    const [users] = await db.query('SELECT id, name, email FROM users');
     res.json(users);
-  });
-};
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+}
 
-export const getUserById = (req: Request, res: Response): void => {
-  const id = parseInt(req.params.id);
+export async function getUserById(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
 
-  connection.query('SELECT * FROM users WHERE id = ?', id, (err, results) => {
-    if (err) {
-      console.error(err);
-      res.status(500).json({ error: 'Internal server error' });
-      return;
+    const [user] = await db.query('SELECT id, name, email FROM users WHERE id = ?', [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
-
-    if (results.length === 0) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-
-    const row: UserRow = results[0];
-    const user: User = { id: row.id, name: row.name, email: row.email, password: row.password };
 
     res.json(user);
-  });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+}
+
+export async function updateUser(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { name, email } = req.body;
+
+    const [existingUser] = await db.query('SELECT * FROM users WHERE email = ? AND id <> ?', [email, id]);
+    if (existingUser) {
+      return res.status(400).json({ error: 'O email informado já está sendo usado.' });
+    }
+
+    await db.query('UPDATE users SET name = ?, email = ? WHERE id = ?', [name, email, id]);
+
+    res.json({ id, name, email });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+}
+
+export async function deleteUser(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+
+    await db.query('DELETE FROM users WHERE id = ?', [id]);
+
+    res.json({ message: 'Usuário deletado com sucesso.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+}
+
+export async function login(req: Request, res: Response) {
+  try {
+    const { email, password } = req.body;
+
+    // Verifica se o usuário existe no banco de dados
+    const [user] = await db.query("SELECT * FROM users WHERE email = ?", [
+      email,
+    ]);
+    if (!user) {
+      return res.status(401).json({ error: "Email ou senha incorretos." });
+    }
+
+    // Verifica se a senha está correta
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: "Email ou senha incorretos." });
+    }
+
+    // Gera o token de autenticação
+    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET);
+
+    res.json({ token });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro interno do servidor." });
+  }
 };
